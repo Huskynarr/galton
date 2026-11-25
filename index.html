@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Galtonbrett</title>
+<!--
+  Galtonbrett – interaktives Wahrscheinlichkeits-Exponat für den Galadriel-Kiosk.
+  Umgesetzt nach dem Besuchervorschlag „Mehr interaktive Exponate zur
+  Wahrscheinlichkeitsrechnung“.
+
+  Jede Kugel springt an n Nagelreihen unabhängig mit Wahrscheinlichkeit p nach
+  rechts (beim Einwurf ausgewürfelt; die Flugbahnen dazwischen sind Wurfparabeln
+  unter Schwerkraft, ändern die Verteilung aber nicht). Die Fachnummer k (Anzahl Rechts-Schritte) ist damit binomialverteilt,
+  P(k) = C(n,k) p^k (1-p)^(n-k); für große n nähert sich das der Normalverteilung
+  mit μ = n·p, σ = √(n·p·(1-p)).
+  Reines Canvas-2D (kein WebGL), läuft auch in WebKitGTK ohne Compositing.
+-->
+<style>
+  :root {
+    --blue: #344A9A;
+    --blue-dark: #1e2b58;
+    --bg: #f4f6fb;
+    --panel: rgba(255, 255, 255, 0.92);
+    --text: #1f2937;
+    --muted: #5a6270;
+    --accent: #ffb347;
+  }
+  * { box-sizing: border-box; -webkit-user-select: none; user-select: none; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; background: var(--bg);
+    color: var(--text); font-family: 'Inter', 'DejaVu Sans', sans-serif;
+    touch-action: none;
+  }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  #hud { position: fixed; left: 32px; top: 22px; max-width: 40vw; pointer-events: none; }
+  #hud h1 { margin: 0; font-size: 44px; font-weight: 800; color: var(--blue); }
+  #hud p  { margin: 6px 0 0; font-size: 19px; color: var(--muted); }
+  #stats {
+    position: fixed; left: 32px; top: 118px; padding: 10px 16px; border-radius: 14px;
+    background: var(--panel); border: 2px solid #d4d9e6; font-size: 16px; line-height: 1.5;
+    pointer-events: none; min-width: 270px;
+  }
+  #stats b { color: var(--blue); }
+  #stats .row { display: flex; justify-content: space-between; gap: 18px; }
+  #stats .th { color: #c2410c; }
+  #stats .few { font-size: 14px; color: #b45309; margin-top: 2px; }
+  #stats .head { font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  #bar {
+    position: fixed; left: 0; right: 0; bottom: 18px; margin: 0 auto; width: fit-content;
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center;
+    padding: 12px 14px; border-radius: 20px; background: var(--blue-dark);
+    max-width: calc(100vw - 32px); box-shadow: 0 6px 24px rgba(30, 43, 88, .25);
+  }
+  .sep { width: 2px; height: 44px; background: rgba(255,255,255,.2); margin: 0 4px; }
+  .lbl { color: #dfe4f5; font-size: 17px; font-weight: 700; padding: 0 4px; min-width: 92px; text-align: center; }
+  button {
+    font: inherit; font-size: 19px; font-weight: 700; color: #fff;
+    background: rgba(255,255,255,.10); border: 2px solid rgba(255,255,255,.25);
+    border-radius: 14px; padding: 0 18px; height: 60px; min-width: 60px; cursor: pointer;
+  }
+  button:active { transform: scale(.96); }
+  button.on { background: var(--blue); border-color: #8fa2e6; }
+  button.info { background: var(--accent); color: #1b1b1b; border-color: var(--accent); }
+  #hint {
+    position: fixed; right: 120px; top: 30px; max-width: 520px;
+    padding: 12px 22px; border-radius: 30px; background: var(--blue); color: #fff;
+    font-size: 20px; pointer-events: none; transition: opacity 1s;
+  }
+  #info {
+    position: fixed; inset: 0; background: rgba(15, 20, 45, .6); display: none;
+    align-items: center; justify-content: center; padding: 24px;
+  }
+  #info.open { display: flex; }
+  #info .card {
+    background: #fff; border-radius: 22px; max-width: 1100px; width: 100%;
+    max-height: 92vh; overflow: auto; padding: 34px 44px 28px; border-top: 10px solid var(--blue);
+  }
+  #info h2 { margin: 0 0 14px; font-size: 34px; color: var(--blue); }
+  #info h3 { margin: 22px 0 6px; font-size: 23px; color: var(--text); }
+  #info p, #info li { font-size: 19px; line-height: 1.5; color: #374151; margin: 4px 0; }
+  #info .eq { font-family: 'DejaVu Serif', serif; font-size: 24px; text-align: center; margin: 10px 0; color: var(--blue-dark); }
+  #info .foot { margin-top: 22px; font-size: 16px; color: var(--muted); }
+  #info .close { margin-top: 20px; color: #1b1b1b; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="hud">
+  <h1 data-t="title"></h1>
+  <p data-t="subtitle"></p>
+</div>
+<div id="stats"></div>
+<div id="hint" data-t="hint"></div>
+
+<div id="bar">
+  <button id="b1">＋1</button>
+  <button id="b10">＋10</button>
+  <button id="b100">＋100</button>
+  <div class="sep"></div>
+  <button id="rowsMinus" aria-label="weniger Reihen">－</button>
+  <span class="lbl" id="rowsLbl"></span>
+  <button id="rowsPlus" aria-label="mehr Reihen">＋</button>
+  <div class="sep"></div>
+  <button data-p="0.3">p = 0,3</button>
+  <button data-p="0.5" class="on">p = 0,5</button>
+  <button data-p="0.7">p = 0,7</button>
+  <div class="sep"></div>
+  <button id="tCurve" class="on" data-t="curve"></button>
+  <button id="tPascal" data-t="pascal"></button>
+  <button id="reset" data-t="reset"></button>
+  <div class="sep"></div>
+  <button id="infoBtn" class="info" data-t="what"></button>
+  <button id="lang">EN</button>
+</div>
+
+<div id="info"><div class="card" id="infoCard"></div></div>
+
+<script>
+'use strict';
+window.onerror = (msg, src, line) => { window.__err = msg + ' @' + line; };
+
+// ---------------------------------------------------------------- Texte
+const TEXT = {
+  de: {
+    title: 'Galtonbrett',
+    subtitle: 'Zufall im Einzelnen – Ordnung im Großen',
+    hint: 'Tippe auf „+10“ oder „+100“ und sieh zu, welche Form entsteht',
+    curve: 'Kurve', pascal: 'Pascal', reset: 'Neu', what: 'Was sehe ich?',
+    rows: n => n + ' Reihen',
+    balls: 'Kugeln', mean: 'Mittelwert', sd: 'Streuung σ',
+    measured: 'gemessen', theory: 'Theorie',
+    few: '(wenige Kugeln – schwankt stark)',
+    info: `
+      <h2>Was sehe ich hier?</h2>
+      <p>Jede Kugel trifft auf jeder Reihe einen Nagel und springt <b>zufällig</b> nach links oder rechts –
+      bei p = 0,5 wie ein Münzwurf. Wo eine einzelne Kugel landet, kann niemand vorhersagen.
+      Viele Kugeln zusammen bilden aber immer wieder dieselbe Form.</p>
+      <h3>Wie viele Wege führen in ein Fach?</h3>
+      <p>In Fach k landet eine Kugel, die genau k-mal nach rechts gesprungen ist. Die Zahl der Wege dorthin
+      ist der <b>Binomialkoeffizient</b> C(n,k) – genau die Zahlen im <b>Pascalschen Dreieck</b>
+      (Knopf „Pascal“): Jede Zahl ist die Summe der beiden darüber.</p>
+      <h3>Die Binomialverteilung</h3>
+      <div class="eq">P(k) = C(n,k) · p<sup>k</sup> · (1 − p)<sup>n − k</sup></div>
+      <p>Die orangefarbenen Punkte zeigen, wie viele Kugeln man in jedem Fach erwartet. Mittelwert
+      μ = n·p, Streuung σ = √(n·p·(1−p)). Mit „p = 0,3“ oder „0,7“ wird das Brett schief.</p>
+      <h3>Die Glockenkurve</h3>
+      <p>Je mehr Reihen, desto genauer passt sich die Verteilung der <b>Normalverteilung</b> (Gaußsche
+      Glockenkurve) an. Das ist der <b>Zentrale Grenzwertsatz</b>: Die Summe vieler kleiner, unabhängiger
+      Zufälle ist annähernd normalverteilt – deshalb ist die Glockenkurve in der Natur so häufig.</p>
+      <h3>Gesetz der großen Zahlen</h3>
+      <p>Bei wenigen Kugeln weichen die Säulen noch deutlich von der Kurve ab. Je mehr Kugeln fallen,
+      desto näher kommen gemessener Mittelwert und Streuung den theoretischen Werten.</p>
+      <p class="foot">Umgesetzt nach einem Besuchervorschlag aus der Feedback-Abstimmung am Kiosk.
+      Mathematisches Institut, Universität Freiburg.</p>`,
+    close: 'Schließen',
+  },
+  en: {
+    title: 'Galton Board',
+    subtitle: 'Chance in detail – order in the large',
+    hint: 'Tap “+10” or “+100” and watch which shape appears',
+    curve: 'Curve', pascal: 'Pascal', reset: 'Reset', what: 'What am I seeing?',
+    rows: n => n + ' rows',
+    balls: 'Balls', mean: 'Mean', sd: 'Spread σ',
+    measured: 'measured', theory: 'theory',
+    few: '(few balls – varies a lot)',
+    info: `
+      <h2>What am I seeing?</h2>
+      <p>At every row each ball hits a peg and bounces <b>randomly</b> to the left or right – with
+      p = 0.5 just like a coin toss. Nobody can predict where a single ball will land.
+      Yet many balls together form the same shape again and again.</p>
+      <h3>How many paths lead into a bin?</h3>
+      <p>A ball lands in bin k if it bounced to the right exactly k times. The number of paths
+      there is the <b>binomial coefficient</b> C(n,k) – exactly the numbers of <b>Pascal's triangle</b>
+      (button “Pascal”): each number is the sum of the two above it.</p>
+      <h3>The binomial distribution</h3>
+      <div class="eq">P(k) = C(n,k) · p<sup>k</sup> · (1 − p)<sup>n − k</sup></div>
+      <p>The orange dots show how many balls are expected in each bin. Mean μ = n·p,
+      spread σ = √(n·p·(1−p)). With “p = 0.3” or “0.7” the board becomes skewed.</p>
+      <h3>The bell curve</h3>
+      <p>The more rows, the closer the distribution gets to the <b>normal distribution</b> (Gaussian
+      bell curve). This is the <b>central limit theorem</b>: the sum of many small independent random
+      effects is approximately normally distributed – which is why the bell curve is so common in nature.</p>
+      <h3>Law of large numbers</h3>
+      <p>With few balls the columns still differ clearly from the curve. The more balls fall,
+      the closer the measured mean and spread get to the theoretical values.</p>
+      <p class="foot">Built from a visitor suggestion in the kiosk feedback poll.
+      Mathematical Institute, University of Freiburg.</p>`,
+    close: 'Close',
+  },
+};
+let lang = 'de';
+function applyLang() {
+  const T = TEXT[lang];
+  document.documentElement.lang = lang;
+  document.querySelectorAll('[data-t]').forEach(el => { el.textContent = T[el.dataset.t]; });
+  document.getElementById('lang').textContent = lang === 'de' ? 'EN' : 'DE';
+  document.getElementById('rowsLbl').textContent = T.rows(state.rows);
+  document.querySelectorAll('[data-p]').forEach(b => {
+    b.textContent = 'p = ' + (lang === 'de' ? b.dataset.p.replace('.', ',') : b.dataset.p);
+  });
+  document.getElementById('infoCard').innerHTML =
+    T.info + `<button class="close info" onclick="toggleInfo(false)">${T.close}</button>`;
+  statsDirty = true;
+}
+
+// ---------------------------------------------------------------- Zustand
+const state = { rows: 12, p: 0.5, curve: true, pascal: false };
+const ROWS_MIN = 4, ROWS_MAX = 20;
+const AUTO_RESET = 1500;            // Attract-Modus: nach so vielen Kugeln neu beginnen
+let bins = [], total = 0, sum = 0, sumSq = 0;
+let balls = [];                      // fallende Kugeln
+let queue = 0, queueTimer = 0;       // noch freizugebende Kugeln (Strom)
+let statsDirty = true;
+
+// ---------------------------------------------------------------- Geometrie
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+let G = {};   // cx, top, dy, bw, pegR, binTop, binBottom, r, g
+
+function layout() {
+  const n = state.rows;
+  // Oben nur links Titel/Statistik (die Pyramide ist dort noch schmal),
+  // unten die Button-Leiste: die volle Breite für die Fächer nutzen.
+  const top = 125, bottom = H - 150;
+  const bw = Math.min((W - 160) / (n + 1), 90);
+  const total = bottom - top;
+  // Nagelbereich ~58 %, Fächer ~42 %; Reihenabstand höchstens 0,9 Nagelabstände
+  const pegH = Math.min(total * 0.58, n * bw * 0.9);
+  const dy = pegH / n;
+  const pegR = Math.max(2.5, Math.min(bw * 0.08, 6));
+  const r = Math.max(3.5, Math.min(bw * 0.17, dy * 0.3, 10));
+  G = {
+    cx: W / 2, top, dy, bw, pegR, r,
+    binTop: top + n * dy + dy * 0.5,
+    binBottom: bottom,
+    // Schwerkraft in px/s², an den Reihenabstand gekoppelt (gleiches Tempo bei jeder Reihenzahl)
+    g: dy / 0.006,
+  };
+  sprites.clear();
+  layers.key = '';
+}
+
+function resize() {
+  DPR = window.devicePixelRatio || 1;
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  layout();
+}
+
+// ---------------------------------------------------------------- Mathematik
+function binom(n, k) {
+  if (k < 0 || k > n) return 0;
+  let c = 1;
+  for (let i = 1; i <= k; i++) c = c * (n - k + i) / i;
+  return c;
+}
+function binomPmf(n, k, p) { return binom(n, k) * Math.pow(p, k) * Math.pow(1 - p, n - k); }
+
+// ---------------------------------------------------------------- Kugeln
+// Der Weg jeder Kugel (Rechts-Schritte mit Wahrscheinlichkeit p) wird beim
+// Einwurf ausgewürfelt – nur so ist die Verteilung exakt binomial. Die Bewegung
+// ist trotzdem physikalisch: freier Fall, an jedem Nagel ein kleiner Abprall
+// (Wurfparabel unter Schwerkraft) zum nächsten Nagel, zufällig hoch.
+function binColor(k, n) {
+  const t = n ? k / n : 0.5;
+  const h = 220 - 200 * t;           // blau -> orange
+  return `hsl(${h}, 70%, 48%)`;
+}
+const pegX = (row, pos) => G.cx + (pos - row / 2) * G.bw;
+const restY = row => G.top + row * G.dy - G.pegR - G.r;   // Kugel liegt auf dem Nagel
+
+function choosePath(n, p) {
+  const path = new Uint8Array(n);
+  let k = 0;
+  for (let i = 0; i < n; i++) { path[i] = Math.random() < p ? 1 : 0; k += path[i]; }
+  return { path, k };
+}
+function startHop(b) {
+  // Wurfparabel von Nagel (row, pos) zu (row+1, pos'): y(t) = y0 - v0 t + g t²/2
+  const g = G.g, hb = G.dy * (0.14 + 0.16 * Math.random());   // Abprallhöhe variiert
+  const v0 = Math.sqrt(2 * g * hb);
+  const drop = G.dy;
+  b.v0 = v0;
+  b.T = (v0 + Math.sqrt(v0 * v0 + 2 * g * drop)) / g;
+  b.x0 = pegX(b.row, b.pos);
+  b.y0 = restY(b.row);
+  b.pos += b.path[b.row];
+  b.x1 = pegX(b.row + 1, b.pos);
+  b.t = 0;
+  b.phase = 'hop';
+}
+function spawn() {
+  const n = state.rows;
+  const { path, k } = choosePath(n, state.p);
+  const b = { path, k, row: 0, pos: 0, color: binColor(k, n), phase: 'drop', t: 0,
+              x: G.cx + (Math.random() - 0.5) * G.r * 0.6, y: G.top - G.dy * 1.6, vy: 0, done: false };
+  balls.push(b);
+}
+function land(b) {
+  bins[b.k]++; total++; sum += b.k; sumSq += b.k * b.k;
+  statsDirty = true;
+}
+function reset() {
+  bins = new Array(state.rows + 1).fill(0);
+  total = 0; sum = 0; sumSq = 0; balls = []; queue = 0;
+  statsDirty = true;
+  layout();
+}
+
+function updateBalls(dt) {
+  const n = state.rows, g = G.g;
+  for (const b of balls) {
+    if (b.phase === 'drop') {                // freier Fall aus dem Trichter auf den obersten Nagel
+      b.vy += g * dt; b.y += b.vy * dt;
+      b.x += (G.cx - b.x) * Math.min(1, dt * 12);
+      if (b.y >= restY(0)) { b.y = restY(0); b.row = 0; startHop(b); }
+    } else if (b.phase === 'hop') {
+      b.t += dt;
+      if (b.t >= b.T) {
+        const vEnd = -b.v0 + g * b.T;
+        b.row++;
+        if (b.row >= n) {                    // unter der letzten Reihe: Fall ins Fach
+          b.phase = 'fall'; b.x = b.x1; b.y = restY(n); b.vy = vEnd;
+        } else {
+          startHop(b);
+        }
+      } else {
+        const f = b.t / b.T;
+        b.x = b.x0 + (b.x1 - b.x0) * f;
+        b.y = b.y0 - b.v0 * b.t + 0.5 * g * b.t * b.t;
+      }
+    }
+    if (b.phase === 'fall') {
+      b.vy += g * dt; b.y += b.vy * dt;
+      const target = slotY(b.k, bins[b.k]);
+      if (b.y >= target) { b.done = true; land(b); }
+    }
+  }
+  balls = balls.filter(b => !b.done);
+}
+
+// ---------------------------------------------------------------- Fächer: Einzelkugeln oder Säulen
+// Solange es passt, stapeln sich die Kugeln einzeln (dichteste Packung, versetzte
+// Lagen). Wird ein Fach zu voll, wechselt die Darstellung auf skalierte Säulen.
+let stack = { balls: true, m: 1, rowH: 1, scaleY: 1 };
+function computeScale() {
+  const n = state.rows, r = G.r, bw = G.bw;
+  const hAvail = G.binBottom - G.binTop - 34;           // Platz für Pascal-Zahlen oben
+  let maxV = Math.max(1, ...bins);
+  if (state.curve) {
+    const N = Math.max(total, 1);
+    for (let k = 0; k <= n; k++) maxV = Math.max(maxV, N * binomPmf(n, k, state.p));
+  }
+  const m = Math.max(1, Math.floor((bw - 6 - r) / (2 * r)));  // Kugeln pro Lage
+  const rowH = 2 * r * 0.87;                                   // versetzte Lagen
+  const perBall = rowH / m;                                    // Höhe je Kugel im Mittel
+  if (maxV * perBall <= hAvail) stack = { balls: true, m, rowH, scaleY: perBall };
+  else stack = { balls: false, m, rowH, scaleY: hAvail / maxV };
+}
+// Mittelpunkt (x, y) der idx-ten Kugel im Fach k (Kugel-Modus)
+function slotXY(k, idx) {
+  const { m, rowH } = stack, r = G.r;
+  const left = G.cx - (state.rows + 1) / 2 * G.bw + k * G.bw;
+  const layer = Math.floor(idx / m), col = idx % m;
+  const x0 = left + (G.bw - (m * 2 * r + r)) / 2 + r + (layer % 2 ? r : 0);
+  return [x0 + col * 2 * r, G.binBottom - r - 2 - layer * rowH];
+}
+function slotY(k, count) {
+  if (stack.balls) return slotXY(k, count)[1];
+  return G.binBottom - count * stack.scaleY - G.r;
+}
+
+// Kugel-Sprites (Kreis mit leichter Schattierung), je Farbe einmal gerendert
+const sprites = new Map();
+function sprite(color) {
+  let s = sprites.get(color);
+  if (s) return s;
+  const r = G.r, size = Math.ceil((2 * r + 2) * DPR);
+  s = document.createElement('canvas'); s.width = s.height = size;
+  const c = s.getContext('2d'); c.scale(DPR, DPR);
+  const R = r + 1, gr = c.createRadialGradient(R - r * 0.35, R - r * 0.35, r * 0.1, R, R, r);
+  gr.addColorStop(0, 'rgba(255,255,255,0.85)'); gr.addColorStop(0.35, color); gr.addColorStop(1, color);
+  c.fillStyle = gr; c.beginPath(); c.arc(R, R, r, 0, 2 * Math.PI); c.fill();
+  sprites.set(color, s);
+  return s;
+}
+function drawBall(color, x, y) {
+  const r = G.r;
+  ctx.drawImage(sprite(color), x - r - 1, y - r - 1, 2 * r + 2, 2 * r + 2);
+}
+
+// ---------------------------------------------------------------- Zeichnen
+// Unveränderliche Teile (Hintergrund, Trichter, Fächerrahmen, Nägel) und die
+// Pascal-Zahlen werden nur bei Layout-Änderung neu gezeichnet und pro Frame als
+// Bild kopiert – spart ohne GPU viel Zeit.
+const layers = { key: '', base: null, pascal: null };
+function newLayer() {
+  const c = document.createElement('canvas');
+  c.width = Math.round(W * DPR); c.height = Math.round(H * DPR);
+  const x = c.getContext('2d'); x.setTransform(DPR, 0, 0, DPR, 0, 0);
+  return [c, x];
+}
+function buildLayers() {
+  const n = state.rows, { cx, top, dy, bw, binTop, binBottom, r, pegR } = G;
+  const left = cx - (n + 1) / 2 * bw, right = cx + (n + 1) / 2 * bw;
+  let c, x;
+  [c, x] = newLayer(); layers.base = c;
+  x.fillStyle = '#f4f6fb'; x.fillRect(0, 0, W, H);
+  x.fillStyle = '#dfe4f5';                         // Trichter
+  x.beginPath();
+  x.moveTo(cx - bw * 1.4, top - dy * 1.9); x.lineTo(cx + bw * 1.4, top - dy * 1.9);
+  x.lineTo(cx + r * 2.2, top - dy * 0.65); x.lineTo(cx - r * 2.2, top - dy * 0.65);
+  x.closePath(); x.fill();
+  x.fillStyle = '#ffffff'; x.fillRect(left, binTop, right - left, binBottom - binTop);
+  x.strokeStyle = '#c3cae0'; x.lineWidth = 2;
+  for (let k = 0; k <= n + 1; k++) {
+    const xx = left + k * bw;
+    x.beginPath(); x.moveTo(xx, binTop); x.lineTo(xx, binBottom); x.stroke();
+  }
+  x.fillStyle = '#344A9A';                         // Nägel
+  for (let row = 0; row < n; row++)
+    for (let j = 0; j <= row; j++) {
+      x.beginPath(); x.arc(cx + (j - row / 2) * bw, top + row * dy, pegR, 0, 2 * Math.PI); x.fill();
+    }
+  x.fillStyle = '#5a6270'; x.textAlign = 'center'; x.textBaseline = 'top';   // Fachnummern
+  x.font = `600 ${Math.max(12, Math.min(18, bw * 0.35))}px Inter, 'DejaVu Sans', sans-serif`;
+  for (let k = 0; k <= n; k++) x.fillText(String(k), left + (k + 0.5) * bw, binBottom + 6);
+
+  // Pascal-Zahlen (Anzahl Wege) mit weißem Rand – liegt später ÜBER den Kugeln
+  [c, x] = newLayer(); layers.pascal = c;
+  x.textAlign = 'center'; x.textBaseline = 'middle'; x.lineJoin = 'round'; x.lineWidth = 4;
+  x.strokeStyle = 'rgba(255,255,255,0.95)';
+  const halo = (t, xx, yy, fill) => { x.strokeText(t, xx, yy); x.fillStyle = fill; x.fillText(t, xx, yy); };
+  for (let row = 0; row < n; row++)
+    for (let j = 0; j <= row; j++) {
+      const t = String(binom(row, j));
+      // Schrift pro Zahl so groß, wie Reihen- und Nagelabstand erlauben
+      const f = Math.min(16, dy * 0.45, (bw - 2 * pegR - 4) / (t.length * 0.6));
+      if (f < 8) continue;
+      x.font = `700 ${f}px Inter, 'DejaVu Sans', sans-serif`;
+      halo(t, cx + (j - row / 2) * bw, top + row * dy - pegR - f * 0.75, '#1e2b58');
+    }
+  for (let k = 0; k <= n; k++) {                   // Wege in die Fächer
+    const t = String(binom(n, k));
+    const f = Math.min(18, (bw - 6) / (t.length * 0.6));
+    x.font = `700 ${f}px Inter, 'DejaVu Sans', sans-serif`;
+    halo(t, left + (k + 0.5) * bw, binTop + 16, '#c2410c');
+  }
+  layers.key = [W, H, DPR, n].join('|');
+}
+
+function draw() {
+  const n = state.rows, { cx, bw, binBottom, r } = G;
+  if (layers.key !== [W, H, DPR, n].join('|')) buildLayers();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(layers.base, 0, 0);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const left = cx - (n + 1) / 2 * bw, right = cx + (n + 1) / 2 * bw;
+
+  // Inhalt der Fächer
+  for (let k = 0; k <= n; k++) {
+    const c = bins[k];
+    if (!c) continue;
+    const color = binColor(k, n);
+    if (stack.balls) {
+      for (let i = 0; i < c; i++) { const [x, y] = slotXY(k, i); drawBall(color, x, y); }
+    } else {
+      const h = c * stack.scaleY, x = left + k * bw;
+      ctx.fillStyle = color; ctx.globalAlpha = 0.85;
+      ctx.fillRect(x + 3, binBottom - h, bw - 6, h);
+      ctx.globalAlpha = 1;
+    }
+  }
+  ctx.beginPath(); ctx.moveTo(left - 10, binBottom); ctx.lineTo(right + 10, binBottom);
+  ctx.strokeStyle = '#344A9A'; ctx.lineWidth = 4; ctx.stroke();
+
+  // fallende Kugeln
+  for (const b of balls) drawBall(b.color, b.x, b.y);
+
+  // Theorie: Binomial-Punkte + Normalverteilung (über den Kugeln)
+  if (state.curve) {
+    const N = Math.max(total, 1), p = state.p, sY = stack.scaleY;
+    const mu = n * p, sd = Math.sqrt(n * p * (1 - p));
+    ctx.strokeStyle = '#c2410c'; ctx.lineWidth = 3; ctx.setLineDash([10, 7]);
+    ctx.beginPath();
+    for (let i = 0; i <= 150; i++) {
+      const xk = -0.5 + i / 150 * (n + 1);
+      const pdf = Math.exp(-((xk - mu) ** 2) / (2 * sd * sd)) / (sd * Math.sqrt(2 * Math.PI));
+      const x = left + (xk + 0.5) * bw, y = binBottom - N * pdf * sY;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = '#ff8c1a'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    for (let k = 0; k <= n; k++) {
+      const y = binBottom - N * binomPmf(n, k, p) * sY;
+      const x = left + (k + 0.5) * bw;
+      ctx.beginPath(); ctx.arc(x, y, Math.max(5, r * 0.8), 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+    }
+  }
+
+  // Pascal-Zahlen zuletzt: über Kugeln und Kurve
+  if (state.pascal) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(layers.pascal, 0, 0);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+}
+
+// ---------------------------------------------------------------- Statistik
+function fmt(x, d = 2) {
+  if (!isFinite(x)) return '–';
+  const s = x.toFixed(d);
+  return lang === 'de' ? s.replace('.', ',') : s;
+}
+let lastStats = 0;
+function updateStats() {
+  // höchstens 5x pro Sekunde: HTML-Neuaufbau kostet ohne GPU-Compositing Zeit
+  const now = performance.now();
+  if (!statsDirty || now - lastStats < 200) return;
+  statsDirty = false; lastStats = now;
+  const T = TEXT[lang], n = state.rows, p = state.p;
+  const mean = total ? sum / total : NaN;
+  const sd = total > 1 ? Math.sqrt(Math.max(0, (sumSq - total * mean * mean) / (total - 1))) : NaN;
+  document.getElementById('stats').innerHTML = `
+    <div class="row"><span>${T.balls}</span><b>${total.toLocaleString(lang === 'de' ? 'de-DE' : 'en-US')}</b></div>
+    <div class="row head"><span></span><span>${T.measured} · <span class="th">${T.theory}</span></span></div>
+    <div class="row"><span>${T.mean}</span><span><b>${fmt(mean)}</b> · <span class="th">${fmt(n * p)}</span></span></div>
+    <div class="row"><span>${T.sd}</span><span><b>${fmt(sd)}</b> · <span class="th">${fmt(Math.sqrt(n * p * (1 - p)))}</span></span></div>
+    ${total > 0 && total < 30 ? `<div class="few">${T.few}</div>` : ''}`;
+}
+
+// ---------------------------------------------------------------- Bedienung
+let lastTouch = -1e9;
+function touched() { lastTouch = performance.now(); hideHint(); }
+document.addEventListener('pointerdown', touched, true);
+
+function addBalls(k) { queue += k; }
+document.getElementById('b1').addEventListener('click', () => addBalls(1));
+document.getElementById('b10').addEventListener('click', () => addBalls(10));
+document.getElementById('b100').addEventListener('click', () => addBalls(100));
+function setRows(n) {
+  state.rows = Math.max(ROWS_MIN, Math.min(ROWS_MAX, n));
+  document.getElementById('rowsLbl').textContent = TEXT[lang].rows(state.rows);
+  reset();
+}
+document.getElementById('rowsMinus').addEventListener('click', () => setRows(state.rows - 1));
+document.getElementById('rowsPlus').addEventListener('click', () => setRows(state.rows + 1));
+document.querySelectorAll('[data-p]').forEach(btn => btn.addEventListener('click', () => {
+  state.p = Number(btn.dataset.p);
+  document.querySelectorAll('[data-p]').forEach(b => b.classList.toggle('on', b === btn));
+  reset();
+}));
+function toggleBtn(id, key) {
+  const el = document.getElementById(id);
+  el.addEventListener('click', () => { state[key] = !state[key]; el.classList.toggle('on', state[key]); });
+}
+toggleBtn('tCurve', 'curve');
+toggleBtn('tPascal', 'pascal');
+document.getElementById('reset').addEventListener('click', reset);
+document.getElementById('lang').addEventListener('click', () => { lang = lang === 'de' ? 'en' : 'de'; applyLang(); });
+function toggleInfo(open) { document.getElementById('info').classList.toggle('open', open); }
+window.toggleInfo = toggleInfo;
+document.getElementById('infoBtn').addEventListener('click', () => toggleInfo(true));
+document.getElementById('info').addEventListener('click', e => { if (e.target.id === 'info') toggleInfo(false); });
+
+let hintHidden = false;
+function hideHint() { if (!hintHidden) { hintHidden = true; document.getElementById('hint').style.opacity = 0; } }
+setTimeout(hideHint, 10000);
+
+// ---------------------------------------------------------------- Hauptschleife
+let lastFrame = performance.now(), attractTimer = 0;
+const STREAM_INTERVAL = 0.035;   // Sekunden zwischen zwei Kugeln im Strom
+function frame(now) {
+  const dt = Math.min(0.05, (now - lastFrame) / 1000); lastFrame = now;
+
+  // Strom aus der Warteschlange
+  queueTimer += dt;
+  while (queue > 0 && queueTimer >= STREAM_INTERVAL) { spawn(); queue--; queueTimer -= STREAM_INTERVAL; }
+  if (queue === 0) queueTimer = Math.min(queueTimer, STREAM_INTERVAL);
+
+  // Attract-Modus: ohne Berührung langsam weiter Kugeln fallen lassen
+  const idle = now - lastTouch > 20000;
+  if (idle && !document.getElementById('info').classList.contains('open')) {
+    attractTimer += dt;
+    if (attractTimer > 0.3) { attractTimer = 0; addBalls(1); }
+    if (total >= AUTO_RESET && balls.length === 0) reset();
+  }
+
+  updateBalls(dt);
+  computeScale();
+  draw();
+  updateStats();
+  requestAnimationFrame(frame);
+}
+
+window.addEventListener('resize', resize);
+resize();
+reset();
+applyLang();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
